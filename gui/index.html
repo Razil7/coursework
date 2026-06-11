@@ -1,0 +1,496 @@
+<!doctype html>
+<html lang="ru">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>УИР · Асинхронные процессы в микросервисах — стенд</title>
+<style>
+  :root{
+    --bg:#0e1116; --panel:#161b23; --panel2:#1c2430; --line:#2a3340;
+    --txt:#e6edf3; --muted:#8b98a8; --accent:#4f9dff; --accent2:#7c5cff;
+    --ok:#3fb950; --warn:#d29922; --err:#f85149; --cmd:#58a6ff; --evt:#3fb950;
+    --radius:14px; --mono:"Consolas","SF Mono",ui-monospace,monospace;
+  }
+  *{box-sizing:border-box}
+  body{margin:0;background:var(--bg);color:var(--txt);
+    font-family:"Segoe UI",system-ui,Arial,sans-serif;font-size:14px;line-height:1.5}
+  a{color:var(--accent);text-decoration:none}
+  .wrap{max-width:1280px;margin:0 auto;padding:18px}
+  header{display:flex;align-items:center;gap:16px;flex-wrap:wrap;
+    background:linear-gradient(120deg,#161b23,#1a2230);border:1px solid var(--line);
+    border-radius:var(--radius);padding:14px 18px}
+  header h1{font-size:17px;margin:0;font-weight:650}
+  header .sub{color:var(--muted);font-size:12px;margin-top:2px}
+  .dot{width:9px;height:9px;border-radius:50%;background:var(--ok);
+    box-shadow:0 0 0 0 rgba(63,185,80,.6);animation:pulse 2s infinite;display:inline-block}
+  @keyframes pulse{0%{box-shadow:0 0 0 0 rgba(63,185,80,.5)}70%{box-shadow:0 0 0 8px rgba(63,185,80,0)}100%{box-shadow:0 0 0 0 rgba(63,185,80,0)}}
+  .spacer{flex:1}
+  .hstats{display:flex;gap:14px;flex-wrap:wrap}
+  .hstat{text-align:center;min-width:64px}
+  .hstat b{display:block;font-size:18px}
+  .hstat span{color:var(--muted);font-size:11px}
+  button{cursor:pointer;border:1px solid var(--line);background:var(--panel2);color:var(--txt);
+    padding:8px 14px;border-radius:10px;font-size:13px;transition:.15s}
+  button:hover{border-color:var(--accent);background:#202b3a}
+  button.primary{background:var(--accent);border-color:var(--accent);color:#06101f;font-weight:650}
+  button.primary:hover{filter:brightness(1.08)}
+  button.alt{background:var(--accent2);border-color:var(--accent2);color:#fff;font-weight:600}
+  button.ghost{background:transparent}
+  nav.tabs{display:flex;gap:6px;margin:16px 0;flex-wrap:wrap}
+  nav.tabs button{border-radius:10px;color:var(--muted)}
+  nav.tabs button.active{color:var(--txt);border-color:var(--accent);background:#1b2636}
+  .panel{background:var(--panel);border:1px solid var(--line);border-radius:var(--radius);padding:18px}
+  .grid{display:grid;gap:16px}
+  .cols-2{grid-template-columns:1fr 1fr}
+  .cols-3{grid-template-columns:repeat(3,1fr)}
+  .cols-side{grid-template-columns:340px 1fr}
+  @media(max-width:900px){.cols-2,.cols-3,.cols-side{grid-template-columns:1fr}}
+  h2{font-size:15px;margin:0 0 10px}
+  h3{font-size:13px;margin:0 0 8px;color:var(--muted);text-transform:uppercase;letter-spacing:.4px}
+  .muted{color:var(--muted)}
+  .mono{font-family:var(--mono)}
+  .tag{display:inline-block;padding:2px 8px;border-radius:999px;font-size:11px;font-weight:600}
+  .t-NEW,.t-PENDING{background:#2a3340;color:#aeb9c7}
+  .t-VALIDATING,.t-PROCESSING,.t-FINALIZING{background:#1f3a52;color:#7cc4ff}
+  .t-COMPLETED{background:#16351f;color:#5ddc78}
+  .t-COMPENSATING{background:#3d3416;color:#e6c14b}
+  .t-FAILED{background:#3d1d1d;color:#ff7b72}
+  .card{background:var(--panel2);border:1px solid var(--line);border-radius:12px;padding:14px}
+  .levels{display:grid;grid-template-columns:repeat(3,1fr);gap:12px}
+  .levels .card b{color:var(--accent)}
+  .pipe{display:flex;align-items:stretch;gap:6px;flex-wrap:wrap;margin-top:6px}
+  .node{background:var(--panel2);border:1px solid var(--line);border-radius:10px;padding:10px 12px;
+    text-align:center;min-width:96px;flex:1}
+  .node small{display:block;color:var(--muted);font-size:10px;margin-top:3px}
+  .arrow{align-self:center;color:var(--muted);font-size:18px}
+  .patterns{display:grid;grid-template-columns:repeat(2,1fr);gap:10px}
+  .pat{display:flex;gap:10px;align-items:flex-start;background:var(--panel2);
+    border:1px solid var(--line);border-radius:10px;padding:10px 12px}
+  .pat .ic{font-size:18px}
+  .controls .row{display:flex;align-items:center;justify-content:space-between;gap:10px;margin:12px 0}
+  input[type=range]{width:160px;accent-color:var(--accent)}
+  input[type=text]{width:100%;background:#0d1117;border:1px solid var(--line);color:var(--txt);
+    border-radius:8px;padding:8px;font-family:var(--mono);font-size:12px}
+  .jobs{display:flex;flex-direction:column;gap:8px;max-height:520px;overflow:auto}
+  .job{background:var(--panel2);border:1px solid var(--line);border-radius:10px;padding:10px 12px;cursor:pointer}
+  .job:hover{border-color:var(--accent)}
+  .job .id{font-family:var(--mono);font-size:12px;color:var(--muted)}
+  .job .line{display:flex;justify-content:space-between;align-items:center;gap:8px}
+  .steps{display:flex;gap:6px;margin-top:8px}
+  .step{flex:1;text-align:center;font-size:11px;padding:5px 4px;border-radius:7px;
+    background:#0d1117;border:1px solid var(--line);color:var(--muted)}
+  .step.done{background:#16351f;border-color:#1f6b34;color:#7ee69a}
+  .step.fail{background:#3d1d1d;border-color:#7d2b27;color:#ff9b94}
+  .step.comp{background:#3d3416;border-color:#7d6a1f;color:#ecd06a}
+  .feed{display:flex;flex-direction:column;gap:5px;max-height:520px;overflow:auto;font-family:var(--mono);font-size:12px}
+  .ev{display:grid;grid-template-columns:46px 150px 1fr;gap:8px;align-items:center;
+    padding:6px 8px;border-radius:8px;background:var(--panel2);border-left:3px solid var(--line)}
+  .ev.k-command{border-left-color:var(--cmd)}
+  .ev.k-event{border-left-color:var(--evt)}
+  .ev.p-retry{border-left-color:var(--warn);background:#241f12}
+  .ev.p-dead_letter{border-left-color:var(--err);background:#2a1414}
+  .ev.terminal-ok{background:#13271a}
+  .ev.terminal-fail{background:#2a1414}
+  .ev .ty{font-weight:600}
+  .ev .cid{color:var(--muted)}
+  .bars{display:flex;gap:20px;align-items:flex-end;height:200px;margin-top:14px}
+  .bar-group{flex:1;text-align:center}
+  .bar{margin:0 auto;width:70px;border-radius:8px 8px 0 0;background:linear-gradient(180deg,var(--accent),#2b6fd1);
+    transition:height .5s;min-height:3px}
+  .bar.sync{background:linear-gradient(180deg,#d29922,#8a6310)}
+  .bignum{font-size:30px;font-weight:700}
+  table{width:100%;border-collapse:collapse;font-size:12px}
+  td,th{text-align:left;padding:6px 8px;border-bottom:1px solid var(--line)}
+  th{color:var(--muted);font-weight:600}
+  .pill{font-family:var(--mono);font-size:11px;background:#0d1117;border:1px solid var(--line);
+    padding:2px 6px;border-radius:6px}
+  .hide{display:none}
+  .detail{position:fixed;inset:0;background:rgba(0,0,0,.6);display:flex;
+    align-items:center;justify-content:center;z-index:50;padding:20px}
+  .detail .box{background:var(--panel);border:1px solid var(--line);border-radius:var(--radius);
+    max-width:760px;width:100%;max-height:86vh;overflow:auto;padding:20px}
+  .kv{display:flex;gap:8px;margin:4px 0}.kv b{min-width:130px;color:var(--muted);font-weight:500}
+  .note{font-size:12px;color:var(--muted);background:#11161e;border:1px solid var(--line);
+    border-radius:10px;padding:10px 12px;margin-top:12px}
+  .flash{animation:flash 1s}
+  @keyframes flash{from{background:#1d3350}to{background:var(--panel2)}}
+</style>
+</head>
+<body>
+<div class="wrap">
+  <header>
+    <div>
+      <h1>Асинхронные процессы в микросервисных системах</h1>
+      <div class="sub">Демонстрационный стенд · режим A (без Docker) · учебный брокер «с нуля»</div>
+    </div>
+    <div class="spacer"></div>
+    <div class="hstats">
+      <div class="hstat"><b id="h-pub">0</b><span>сообщений</span></div>
+      <div class="hstat"><b id="h-done" style="color:var(--ok)">0</b><span>завершено</span></div>
+      <div class="hstat"><b id="h-retry" style="color:var(--warn)">0</b><span>повторов</span></div>
+      <div class="hstat"><b id="h-dlq" style="color:var(--err)">0</b><span>в DLQ</span></div>
+    </div>
+    <div style="display:flex;gap:8px;align-items:center;margin-left:8px">
+      <span class="dot" title="стенд работает"></span>
+      <button class="ghost" onclick="resetAll()">Сбросить</button>
+    </div>
+  </header>
+
+  <nav class="tabs" id="tabs">
+    <button data-tab="overview" class="active">Обзор</button>
+    <button data-tab="play">Песочница</button>
+    <button data-tab="exp">Эксперимент: async vs sync</button>
+    <button data-tab="lvl1">Уровень 1 · asyncio</button>
+    <button data-tab="obs">Наблюдаемость</button>
+  </nav>
+
+  <!-- OVERVIEW -->
+  <section id="tab-overview">
+    <div class="panel">
+      <h2>Что это и что можно потыкать</h2>
+      <p class="muted" style="margin-top:0">Стенд <b>доменно-нейтрален</b>: сервисы названы по архитектурной роли, а «бизнес-логика» абстрактна (шаг 1 → 2 → 3). Цель — показать <b>механизмы асинхронности</b>, а не конкретное приложение. Всё работает в одном процессе на учебном брокере, написанном с нуля.</p>
+      <h3 style="margin-top:18px">Три уровня глубины</h3>
+      <div class="levels">
+        <div class="card"><b>Уровень 1 · Рантайм</b><br><span class="muted">asyncio: цикл событий, корутины, future/task. Неблокирующая конкурентность «с нуля».</span><br><br>→ вкладка «Уровень 1»</div>
+        <div class="card"><b>Уровень 2 · Паттерны</b><br><span class="muted">Свой брокер: очереди, pub/sub, группы, ack, повторы, dead-letter. Сага, Outbox, идемпотентность, CQRS.</span><br><br>→ вкладка «Песочница»</div>
+        <div class="card"><b>Уровень 3 · Распределённость</b><br><span class="muted">Те же паттерны на RabbitMQ (адаптер «порты и адаптеры»). Запускается в режиме B (Docker), здесь не активен.</span></div>
+      </div>
+      <h3 style="margin-top:18px">Конвейер обработки заявки</h3>
+      <div class="pipe">
+        <div class="node">Gateway<small>REST 202</small></div><div class="arrow">→</div>
+        <div class="node">Outbox<small>надёжная публикация</small></div><div class="arrow">→</div>
+        <div class="node">Брокер<small>pub/sub</small></div><div class="arrow">→</div>
+        <div class="node">Coordinator<small>сага</small></div><div class="arrow">→</div>
+        <div class="node">validate<small>шаг 1</small></div><div class="arrow">→</div>
+        <div class="node">process<small>шаг 2</small></div><div class="arrow">→</div>
+        <div class="node">finalize<small>шаг 3</small></div><div class="arrow">→</div>
+        <div class="node">Query<small>read-модель (CQRS)</small></div>
+      </div>
+      <h3 style="margin-top:18px">Реализованные паттерны</h3>
+      <div class="patterns">
+        <div class="pat"><span class="ic">🧩</span><div><b>Сага + компенсация</b><br><span class="muted">оркестрация шагов; при сбое — откат назад (compensate validate).</span></div></div>
+        <div class="pat"><span class="ic">📤</span><div><b>Transactional Outbox</b><br><span class="muted">заявка пишется в outbox, публикует фоновый публикатор — нет «двойной записи».</span></div></div>
+        <div class="pat"><span class="ic">🔁</span><div><b>Идемпотентность</b><br><span class="muted">повторная доставка не выполняет шаг дважды (по message_id).</span></div></div>
+        <div class="pat"><span class="ic">📖</span><div><b>CQRS</b><br><span class="muted">отдельная read-модель строится из событий (итоговая согласованность).</span></div></div>
+        <div class="pat"><span class="ic">⏏️</span><div><b>Повторы + DLQ</b><br><span class="muted">экспоненциальная задержка; исчерпание попыток → dead-letter.</span></div></div>
+        <div class="pat"><span class="ic">🧵</span><div><b>Correlation-id</b><br><span class="muted">сквозная трассировка причинно-следственных связей по всей цепочке.</span></div></div>
+      </div>
+      <div class="note">💡 Начни с вкладки <b>«Песочница»</b>: отправь заявку асинхронно и синхронно, покрути ползунок «сбоев» и посмотри, как срабатывает компенсация саги. Потом — <b>«Эксперимент»</b> для сравнения async/sync под нагрузкой.</div>
+    </div>
+  </section>
+
+  <!-- PLAYGROUND -->
+  <section id="tab-play" class="hide">
+    <div class="grid cols-side">
+      <div class="panel controls">
+        <h2>Управление</h2>
+        <div style="display:flex;gap:8px;flex-wrap:wrap">
+          <button class="primary" onclick="submitJob('async')">▶ Заявка (async, 202)</button>
+          <button class="alt" onclick="submitJob('sync')">⏱ Синхронно (baseline)</button>
+        </div>
+        <div style="margin-top:8px"><input type="text" id="payload" placeholder='payload (необязательно), напр. {"order": 42}' /></div>
+        <div id="sync-out" class="note hide"></div>
+
+        <h3 style="margin-top:20px">Поведение шагов (вживую)</h3>
+        <div class="row">
+          <span>Вероятность сбоя «process»</span>
+          <span><input type="range" id="r-fail" min="0" max="100" step="5" value="0" oninput="onCfg()"><b id="v-fail" class="pill">0%</b></span>
+        </div>
+        <div class="row">
+          <span>Длительность «process»</span>
+          <span><input type="range" id="r-proc" min="0" max="1500" step="50" value="400" oninput="onCfg()"><b id="v-proc" class="pill">400ms</b></span>
+        </div>
+        <div class="row">
+          <span>Длительность «validate»</span>
+          <span><input type="range" id="r-val" min="0" max="500" step="10" value="50" oninput="onCfg()"><b id="v-val" class="pill">50ms</b></span>
+        </div>
+        <div class="note">Подними «сбой process» до 100% и отправь async-заявку → шаг будет повторяться (повторы), затем сага запустит <b>компенсацию</b> и заявка станет FAILED. При 20–60% часть заявок проходит после повторов.</div>
+      </div>
+
+      <div class="grid" style="grid-template-columns:1fr 1fr;gap:16px">
+        <div class="panel">
+          <h2>Заявки <span class="muted" id="jobs-count"></span></h2>
+          <div class="jobs" id="jobs"></div>
+        </div>
+        <div class="panel">
+          <h2>Живая лента сообщений</h2>
+          <div class="feed" id="feed"></div>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- EXPERIMENT -->
+  <section id="tab-exp" class="hide">
+    <div class="panel">
+      <h2>Эксперимент: пропускная способность и задержка</h2>
+      <p class="muted" style="margin-top:0">Конкурентная нагрузка на два эндпоинта приёма заявки: <span class="pill">POST /api/submit</span> (async — ответ 202 сразу) и <span class="pill">POST /api/submit_sync</span> (sync — ответ после всех шагов). Это <b>живой</b> прогон в этом процессе; числа зависят от нагрузки.</p>
+      <div style="display:flex;gap:16px;align-items:center;flex-wrap:wrap;margin:12px 0">
+        <label>Конкурентность <input type="range" id="b-conc" min="5" max="80" step="5" value="20" oninput="lbl('b-conc','v-conc')"><b id="v-conc" class="pill">20</b></label>
+        <label>Длительность, c <input type="range" id="b-dur" min="1" max="5" step="0.5" value="1.5" oninput="lbl('b-dur','v-dur')"><b id="v-dur" class="pill">1.5</b></label>
+        <button class="primary" id="b-run" onclick="runBench()">Запустить нагрузку</button>
+        <span id="b-status" class="muted"></span>
+      </div>
+      <div class="grid cols-2">
+        <div class="card">
+          <h3>Пропускная способность (запр/с)</h3>
+          <div class="bars">
+            <div class="bar-group"><div class="bar" id="bar-thr-a"></div><div style="margin-top:8px"><span class="bignum" id="n-thr-a">—</span><br><span class="muted">async</span></div></div>
+            <div class="bar-group"><div class="bar sync" id="bar-thr-s"></div><div style="margin-top:8px"><span class="bignum" id="n-thr-s">—</span><br><span class="muted">sync</span></div></div>
+          </div>
+        </div>
+        <div class="card">
+          <h3>Средняя задержка ответа (мс)</h3>
+          <div class="bars">
+            <div class="bar-group"><div class="bar" id="bar-lat-a"></div><div style="margin-top:8px"><span class="bignum" id="n-lat-a">—</span><br><span class="muted">async</span></div></div>
+            <div class="bar-group"><div class="bar sync" id="bar-lat-s"></div><div style="margin-top:8px"><span class="bignum" id="n-lat-s">—</span><br><span class="muted">sync</span></div></div>
+          </div>
+        </div>
+      </div>
+      <div id="b-summary" class="note hide"></div>
+      <div class="note">📌 В контролируемом эксперименте работы (<span class="pill">experiments/bench.py</span>) async дал ≈ <b>2,3×</b> по пропускной способности и ≈ <b>2,5×</b> ниже задержку при 0 ошибок. Живой прогон выше — иллюстрация того же эффекта; абсолютные числа отличаются от условий эксперимента.</div>
+    </div>
+  </section>
+
+  <!-- LEVEL 1 -->
+  <section id="tab-lvl1" class="hide">
+    <div class="panel">
+      <h2>Уровень 1 — основы asyncio</h2>
+      <p class="muted" style="margin-top:0">5 «операций ввода-вывода» по 0,2 c. Последовательно — это ≈ 1,0 c. Через <span class="pill">asyncio.gather</span> на время ожидания управление уходит циклу событий — все 5 идут совместно за ≈ 0,2 c. Это и есть <b>конкурентность без параллелизма</b>.</p>
+      <button class="primary" onclick="runLevel1()">Запустить демо</button>
+      <div class="grid cols-3" style="margin-top:16px">
+        <div class="card"><h3>Последовательно</h3><div class="bignum" id="l-seq">—</div><span class="muted">await по очереди</span></div>
+        <div class="card"><h3>Совместно (gather)</h3><div class="bignum" id="l-con" style="color:var(--ok)">—</div><span class="muted">цикл событий</span></div>
+        <div class="card"><h3>Ускорение</h3><div class="bignum" id="l-spd" style="color:var(--accent)">—</div><span class="muted">раз</span></div>
+      </div>
+    </div>
+  </section>
+
+  <!-- OBSERVABILITY -->
+  <section id="tab-obs" class="hide">
+    <div class="grid cols-2">
+      <div class="panel">
+        <h2>Счётчики</h2>
+        <table id="counters"></table>
+        <h3 style="margin-top:18px">Опубликовано по типам сообщений</h3>
+        <table id="bytype"></table>
+        <div class="note">Метрики Prometheus: <a href="/metrics" target="_blank">/metrics</a> (counters/histograms из <span class="pill">observability.py</span>).</div>
+      </div>
+      <div class="panel">
+        <h2>Dead-letter queue <span class="muted" id="dlq-count"></span></h2>
+        <div id="dlq" class="feed" style="max-height:160px"></div>
+        <h2 style="margin-top:18px">Полный журнал сообщений</h2>
+        <div class="feed" id="feed2" style="max-height:360px"></div>
+      </div>
+    </div>
+  </section>
+</div>
+
+<!-- JOB DETAIL MODAL -->
+<div id="detail" class="detail hide" onclick="if(event.target===this)closeDetail()">
+  <div class="box" id="detail-box"></div>
+</div>
+
+<script>
+const $ = s => document.querySelector(s);
+const api = async (url, opts) => (await fetch(url, opts)).json();
+const post = (url, body) => api(url, {method:"POST", headers:{"Content-Type":"application/json"}, body:JSON.stringify(body||{})});
+let lastSeq = 0;
+let curTab = "overview";
+
+document.querySelectorAll("#tabs button").forEach(b=>b.onclick=()=>{
+  curTab=b.dataset.tab;
+  document.querySelectorAll("#tabs button").forEach(x=>x.classList.toggle("active",x===b));
+  ["overview","play","exp","lvl1","obs"].forEach(t=>$("#tab-"+t).classList.toggle("hide",t!==curTab));
+});
+
+function tagClass(s){return "tag t-"+(s||"NEW");}
+function shortId(id){return id?id.slice(0,8):"—";}
+function stepClass(s, completed, status){
+  const inDone = (completed||[]).includes(s);
+  if(status==="COMPLETED") return "step done";
+  if(status==="COMPENSATING") return inDone ? "step comp" : "step";
+  if(status==="FAILED"){
+    if(inDone) return "step done";
+    return s==="process" ? "step fail" : "step";
+  }
+  return inDone ? "step done" : "step";
+}
+
+function renderJobs(jobs){
+  $("#jobs-count").textContent = "("+jobs.length+")";
+  const f = $("#jobs");
+  f.innerHTML = "";
+  jobs.forEach(j=>{
+    const status = j.saga_status || j.rm_status;
+    const div = document.createElement("div");
+    div.className="job";
+    div.onclick=()=>openDetail(j.job_id);
+    const steps = ["validate","process","finalize"].map(s=>
+      `<div class="${stepClass(s, j.completed_steps, status)}">${s}</div>`).join("");
+    div.innerHTML = `<div class="line"><span class="id">${shortId(j.job_id)}</span>
+      <span class="${tagClass(status)}">${status}</span></div>
+      <div class="steps">${steps}</div>`;
+    f.appendChild(div);
+  });
+}
+
+const EVT_LABELS = {
+  JobSubmitted:"📥 заявка", ValidateStep:"→ validate", StepValidated:"✓ validated",
+  ProcessStep:"→ process", StepProcessed:"✓ processed", FinalizeStep:"→ finalize",
+  JobCompleted:"🏁 completed", StepFailed:"✗ step failed", CompensateValidate:"↩ compensate",
+  ValidateCompensated:"↩ compensated", JobFailed:"💥 job failed"
+};
+function evRow(e){
+  let cls="ev k-"+e.kind+" p-"+e.phase;
+  if(e.type==="JobCompleted") cls+=" terminal-ok";
+  if(e.type==="JobFailed") cls+=" terminal-fail";
+  const label = EVT_LABELS[e.type]||e.type;
+  const extra = e.phase==="retry"?` <span style="color:var(--warn)">повтор #${e.attempt}</span>`
+    : e.phase==="dead_letter"?` <span style="color:var(--err)">DLQ</span>`:"";
+  return `<div class="${cls}"><span class="ty">${e.type==="JobCompleted"||e.type==="JobFailed"?"●":(e.kind==="command"?"▸":"○")}</span>
+    <span class="ty">${label}${extra}</span>
+    <span class="cid">${shortId(e.correlation_id)}${e.attempt>1?(" · попытка "+e.attempt):""}</span></div>`;
+}
+let feedHtml = [];
+function pushEvents(events){
+  events.forEach(e=>{ feedHtml.push(evRow(e)); });
+  if(feedHtml.length>400) feedHtml = feedHtml.slice(-400);
+  const html = feedHtml.slice().reverse().join("");
+  $("#feed").innerHTML = html;
+  $("#feed2").innerHTML = html;
+}
+
+function renderObs(s){
+  const c = s.counters;
+  $("#counters").innerHTML = `
+    <tr><th>Опубликовано сообщений</th><td>${c.published}</td></tr>
+    <tr><th>Повторов (retry)</th><td style="color:var(--warn)">${c.retries}</td></tr>
+    <tr><th>Dead-letter</th><td style="color:var(--err)">${c.dead_letters}</td></tr>
+    <tr><th>Заявок всего</th><td>${c.jobs_total}</td></tr>
+    <tr><th>Завершено</th><td style="color:var(--ok)">${c.jobs_completed}</td></tr>
+    <tr><th>В обработке</th><td>${c.jobs_in_flight}</td></tr>
+    <tr><th>Провалено (сага)</th><td style="color:var(--err)">${c.jobs_failed}</td></tr>`;
+  const bt = Object.entries(c.by_type).sort((a,b)=>b[1]-a[1]);
+  $("#bytype").innerHTML = bt.map(([k,v])=>`<tr><th>${k}</th><td>${v}</td></tr>`).join("") || "<tr><td class='muted'>пока пусто</td></tr>";
+  $("#dlq-count").textContent = "("+s.dead_letters.length+")";
+  $("#dlq").innerHTML = s.dead_letters.map(d=>`<div class="ev p-dead_letter"><span>⏏</span><span class="ty">${d.type}</span><span class="cid">${shortId(d.correlation_id)} · попытка ${d.attempt}</span></div>`).join("") || "<span class='muted'>пусто — сообщения не исчерпали повторы</span>";
+}
+
+function applyState(s){
+  $("#h-pub").textContent = s.counters.published;
+  $("#h-done").textContent = s.counters.jobs_completed;
+  $("#h-retry").textContent = s.counters.retries;
+  $("#h-dlq").textContent = s.counters.dead_letters;
+  renderJobs(s.jobs);
+  renderObs(s);
+}
+
+async function poll(){
+  try{
+    const s = await api("/api/state");
+    applyState(s);
+    if(s.last_seq > lastSeq){
+      const r = await api("/api/events?since="+lastSeq);
+      if(r.events.length) pushEvents(r.events);
+      lastSeq = r.last_seq;
+    }
+  }catch(e){}
+  setTimeout(poll, 650);
+}
+
+async function submitJob(mode){
+  const raw = $("#payload").value.trim();
+  let data = {};
+  if(raw){ try{ data = JSON.parse(raw); }catch(e){ data = {note: raw}; } }
+  if(mode==="async"){
+    await post("/api/submit", {data});
+  }else{
+    $("#sync-out").classList.remove("hide");
+    $("#sync-out").textContent = "⏱ синхронная обработка…";
+    const r = await post("/api/submit_sync", {data});
+    $("#sync-out").innerHTML = `✅ sync завершён за <b>${r.elapsed_s} c</b> (validate+process+finalize последовательно). job ${shortId(r.job_id)}`;
+  }
+}
+
+let cfgTimer=null;
+function onCfg(){
+  $("#v-fail").textContent = $("#r-fail").value+"%";
+  $("#v-proc").textContent = $("#r-proc").value+"ms";
+  $("#v-val").textContent = $("#r-val").value+"ms";
+  clearTimeout(cfgTimer);
+  cfgTimer=setTimeout(()=>post("/api/config",{
+    process_fail_rate: (+$("#r-fail").value)/100,
+    process_duration: (+$("#r-proc").value)/1000,
+    validate_duration: (+$("#r-val").value)/1000,
+  }),250);
+}
+function lbl(r,v){$("#"+v).textContent=$("#"+r).value;}
+
+async function runBench(){
+  $("#b-run").disabled=true;
+  $("#b-status").textContent="⏳ идёт нагрузка (async, затем sync)…";
+  try{
+    const r = await post("/api/bench",{concurrency:+$("#b-conc").value, duration:+$("#b-dur").value});
+    const maxThr = Math.max(r.async.throughput, r.sync.throughput, 1);
+    const maxLat = Math.max(r.async.latency_mean_ms, r.sync.latency_mean_ms, 1);
+    $("#bar-thr-a").style.height = (r.async.throughput/maxThr*170)+"px";
+    $("#bar-thr-s").style.height = (r.sync.throughput/maxThr*170)+"px";
+    $("#bar-lat-a").style.height = (r.async.latency_mean_ms/maxLat*170)+"px";
+    $("#bar-lat-s").style.height = (r.sync.latency_mean_ms/maxLat*170)+"px";
+    $("#n-thr-a").textContent = r.async.throughput;
+    $("#n-thr-s").textContent = r.sync.throughput;
+    $("#n-lat-a").textContent = r.async.latency_mean_ms;
+    $("#n-lat-s").textContent = r.sync.latency_mean_ms;
+    $("#b-summary").classList.remove("hide");
+    $("#b-summary").innerHTML = `Обработано: async <b>${r.async.requests}</b> запр., sync <b>${r.sync.requests}</b> запр. ·
+      пропускная способность async выше в <b>${r.speedup_throughput}×</b> ·
+      задержка async ниже в <b>${r.speedup_latency}×</b>.`;
+    $("#b-status").textContent="✓ готово";
+  }catch(e){ $("#b-status").textContent="ошибка: "+e; }
+  $("#b-run").disabled=false;
+}
+
+async function runLevel1(){
+  $("#l-seq").textContent=$("#l-con").textContent=$("#l-spd").textContent="…";
+  const r = await post("/api/level1",{});
+  $("#l-seq").textContent = r.sequential_s+" c";
+  $("#l-con").textContent = r.concurrent_s+" c";
+  $("#l-spd").textContent = r.speedup+"×";
+}
+
+async function openDetail(id){
+  const d = await api("/api/job/"+id);
+  const status = d.saga_status || (d.rm&&d.rm.status) || "—";
+  const steps = ["validate","process","finalize"].map(s=>{
+    const cls=stepClass(s, d.completed_steps, status);
+    return `<div class="${cls}">${s} ${cls.includes('done')?'✓':''}</div>`;
+  }).join("");
+  const evs = (d.events||[]).map(evRow).join("") || "<span class='muted'>нет событий</span>";
+  $("#detail-box").innerHTML = `
+    <div style="display:flex;justify-content:space-between;align-items:center">
+      <h2>Заявка <span class="mono">${shortId(id)}</span></h2>
+      <button class="ghost" onclick="closeDetail()">✕</button>
+    </div>
+    <div class="kv"><b>correlation_id</b><span class="mono">${id}</span></div>
+    <div class="kv"><b>Статус саги</b><span class="${tagClass(status)}">${status}</span></div>
+    <div class="kv"><b>Read-модель (CQRS)</b><span class="${tagClass(d.rm&&d.rm.status)}">${d.rm?d.rm.status:"—"}</span></div>
+    ${d.error?`<div class="kv"><b>Ошибка</b><span style="color:var(--err)">${d.error}</span></div>`:""}
+    <h3 style="margin-top:14px">Шаги саги</h3><div class="steps">${steps}</div>
+    <h3 style="margin-top:14px">События заявки (трассировка по correlation-id)</h3>
+    <div class="feed">${evs}</div>`;
+  $("#detail").classList.remove("hide");
+}
+function closeDetail(){$("#detail").classList.add("hide");}
+
+async function resetAll(){
+  await post("/api/reset",{});
+  feedHtml=[]; lastSeq=0;
+  $("#feed").innerHTML=$("#feed2").innerHTML="";
+  $("#sync-out").classList.add("hide");
+}
+
+poll();
+</script>
+</body>
+</html>
