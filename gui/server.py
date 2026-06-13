@@ -8,6 +8,7 @@ import threading
 import time
 import webbrowser
 from contextlib import asynccontextmanager
+from functools import partial
 from pathlib import Path
 from typing import Any
 
@@ -67,7 +68,7 @@ class Stand:
         self.events: list[dict[str, Any]] = []
         self.seq = 0
         self.started_at = time.time()
-        self.crash_remaining = 0
+        self.crash_remaining = {"validate": 0, "process": 0, "finalize": 0}
         self.counters = self._fresh_counters()
 
     @staticmethod
@@ -77,26 +78,36 @@ class Stand:
     async def start(self) -> None:
         self.coordinator = await coordinator_mod.setup(self.broker)
         self.read_model = await query_mod.setup(self.broker)
-        await wv.setup(self.broker, self.settings, self.idem)
-        await self._setup_process_with_crash()
-        await wf.setup(self.broker, self.settings, self.idem)
+        workers = [
+            ("validate", MessageType.VALIDATE_STEP, "validate", wv.handle_validate),
+            ("process", MessageType.PROCESS_STEP, "process", wp.handle_process),
+            ("finalize", MessageType.FINALIZE_STEP, "finalize", wf.handle_finalize),
+        ]
+        for step, mtype, group, real in workers:
+            await self._setup_worker_with_crash(step, mtype, group, real)
+        await self.broker.subscribe(
+            MessageType.COMPENSATE_VALIDATE,
+            partial(wv.handle_compensate, self.broker, self.settings),
+            group="validate",
+        )
         self._install_hooks()
         await self.broker.start()
         await self.publisher.start()
 
-    async def _setup_process_with_crash(self) -> None:
+    async def _setup_worker_with_crash(
+        self, step: str, mtype: MessageType, group: str, real_handler: Any
+    ) -> None:
         async def handler(env: Envelope) -> None:
-            if self.crash_remaining > 0:
-                self.crash_remaining -= 1
-                raise StepError("имитация падения worker-process во время обработки")
-            await wp.handle_process(self.broker, self.settings, env)
+            if self.crash_remaining.get(step, 0) > 0:
+                self.crash_remaining[step] -= 1
+                raise StepError(f"имитация падения сервиса worker-{step}")
+            await real_handler(self.broker, self.settings, env)
 
-        await self.broker.subscribe(
-            MessageType.PROCESS_STEP, idempotent(self.idem, handler), group="process"
-        )
+        await self.broker.subscribe(mtype, idempotent(self.idem, handler), group=group)
 
-    def set_crash(self, count: int) -> None:
-        self.crash_remaining = max(0, min(3, count))
+    def set_crash(self, service: str, count: int) -> None:
+        if service in self.crash_remaining:
+            self.crash_remaining[service] = max(0, min(3, count))
 
     async def stop(self) -> None:
         await self.publisher.stop()
@@ -233,6 +244,7 @@ class Stand:
             ],
             "jobs": self.jobs(),
             "last_seq": self.seq,
+            "crash_armed": dict(self.crash_remaining),
         }
 
     def set_config(self, body: ConfigBody) -> dict[str, Any]:
@@ -267,6 +279,8 @@ class Stand:
         self.events.clear()
         self.seq = 0
         self.counters = self._fresh_counters()
+        for service in self.crash_remaining:
+            self.crash_remaining[service] = 0
 
     async def _bench_path(
         self, path: str, concurrency: int, duration: float
@@ -361,6 +375,7 @@ class BenchBody(BaseModel):
 
 
 class CrashBody(BaseModel):
+    service: str = "process"
     count: int = 2
 
 
@@ -427,8 +442,8 @@ async def api_bench(body: BenchBody) -> JSONResponse:
 
 @app.post("/api/crash")
 async def api_crash(body: CrashBody) -> JSONResponse:
-    stand.set_crash(body.count)
-    return JSONResponse({"crash_remaining": stand.crash_remaining})
+    stand.set_crash(body.service, body.count)
+    return JSONResponse({"crash_armed": stand.crash_remaining})
 
 
 @app.post("/api/level1")
