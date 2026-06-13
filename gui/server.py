@@ -25,7 +25,7 @@ import query_service.projection as query_mod
 import worker_finalize.worker as wf
 import worker_process.worker as wp
 import worker_validate.worker as wv
-from common.broker.base import RetryPolicy
+from common.broker.base import Handler, RetryPolicy
 from common.broker.in_memory import InMemoryBroker
 from common.config import Settings
 from common.idempotency import InMemoryIdempotencyStore, idempotent
@@ -38,7 +38,7 @@ GUI_DIR = Path(__file__).resolve().parent
 PORT = 8080
 BASE_URL = f"http://127.0.0.1:{PORT}"
 EVENT_CAP = 800
-BENCH_MAX_REQUESTS = 600
+EXPERIMENT_MAX = 800
 
 STEP_ORDER = ["validate", "process", "finalize"]
 
@@ -68,7 +68,9 @@ class Stand:
         self.events: list[dict[str, Any]] = []
         self.seq = 0
         self.started_at = time.time()
-        self.crash_remaining = {"validate": 0, "process": 0, "finalize": 0}
+        self.crash_remaining = {
+            "coordinator": 0, "validate": 0, "process": 0, "finalize": 0, "query": 0,
+        }
         self.counters = self._fresh_counters()
 
     @staticmethod
@@ -76,15 +78,41 @@ class Stand:
         return {"published": 0, "retries": 0, "dead_letters": 0, "by_type": {}}
 
     async def start(self) -> None:
-        self.coordinator = await coordinator_mod.setup(self.broker)
-        self.read_model = await query_mod.setup(self.broker)
+        self.read_model = query_mod.ReadModel()
+        rm = self.read_model
+        query_subs = [
+            (MessageType.JOB_SUBMITTED, rm.on_submitted),
+            (MessageType.STEP_VALIDATED, rm.on_validated),
+            (MessageType.STEP_PROCESSED, rm.on_processed),
+            (MessageType.JOB_COMPLETED, rm.on_completed),
+            (MessageType.JOB_FAILED, rm.on_failed),
+        ]
+        for mtype, fn in query_subs:
+            await self.broker.subscribe(mtype, self._crash_wrap("query", fn), group="query")
+
+        self.coordinator = coordinator_mod.Coordinator(self.broker)
+        c = self.coordinator
+        coord_subs = [
+            (MessageType.JOB_SUBMITTED, c.on_job_submitted),
+            (MessageType.STEP_VALIDATED, c.on_step_validated),
+            (MessageType.STEP_PROCESSED, c.on_step_processed),
+            (MessageType.JOB_COMPLETED, c.on_job_completed),
+            (MessageType.STEP_FAILED, c.on_step_failed),
+            (MessageType.VALIDATE_COMPENSATED, c.on_validate_compensated),
+        ]
+        for mtype, fn in coord_subs:
+            await self.broker.subscribe(
+                mtype, self._crash_wrap("coordinator", fn), group="coordinator"
+            )
+
         workers = [
             ("validate", MessageType.VALIDATE_STEP, "validate", wv.handle_validate),
             ("process", MessageType.PROCESS_STEP, "process", wp.handle_process),
             ("finalize", MessageType.FINALIZE_STEP, "finalize", wf.handle_finalize),
         ]
         for step, mtype, group, real in workers:
-            await self._setup_worker_with_crash(step, mtype, group, real)
+            wrapped = self._crash_wrap(step, partial(real, self.broker, self.settings))
+            await self.broker.subscribe(mtype, idempotent(self.idem, wrapped), group=group)
         await self.broker.subscribe(
             MessageType.COMPENSATE_VALIDATE,
             partial(wv.handle_compensate, self.broker, self.settings),
@@ -94,16 +122,14 @@ class Stand:
         await self.broker.start()
         await self.publisher.start()
 
-    async def _setup_worker_with_crash(
-        self, step: str, mtype: MessageType, group: str, real_handler: Any
-    ) -> None:
+    def _crash_wrap(self, service: str, fn: Any) -> Handler:
         async def handler(env: Envelope) -> None:
-            if self.crash_remaining.get(step, 0) > 0:
-                self.crash_remaining[step] -= 1
-                raise StepError(f"имитация падения сервиса worker-{step}")
-            await real_handler(self.broker, self.settings, env)
+            if self.crash_remaining.get(service, 0) > 0:
+                self.crash_remaining[service] -= 1
+                raise StepError(f"имитация падения сервиса {service}")
+            await fn(env)
 
-        await self.broker.subscribe(mtype, idempotent(self.idem, handler), group=group)
+        return handler
 
     def set_crash(self, service: str, count: int) -> None:
         if service in self.crash_remaining:
@@ -282,51 +308,71 @@ class Stand:
         for service in self.crash_remaining:
             self.crash_remaining[service] = 0
 
-    async def _bench_path(
-        self, path: str, concurrency: int, duration: float
-    ) -> dict[str, Any]:
+    async def _phase(self, path: str, clients: int, messages: int) -> dict[str, Any]:
         import httpx
 
-        deadline = time.perf_counter() + duration
         latencies: list[float] = []
-        count = 0
+        errors = 0
+        t0 = time.perf_counter()
 
-        async with httpx.AsyncClient(base_url=BASE_URL, timeout=30.0) as client:
+        async with httpx.AsyncClient(base_url=BASE_URL, timeout=60.0) as client:
 
-            async def worker() -> None:
-                nonlocal count
-                while time.perf_counter() < deadline and count < BENCH_MAX_REQUESTS:
+            async def one_client() -> None:
+                nonlocal errors
+                for _ in range(messages):
                     started = time.perf_counter()
                     try:
-                        await client.post(path, json={"data": {"bench": True}})
+                        resp = await client.post(path, json={"data": {}})
+                        if resp.status_code >= 400:
+                            errors += 1
                     except Exception:
-                        return
+                        errors += 1
                     latencies.append((time.perf_counter() - started) * 1000.0)
-                    count += 1
 
-            await asyncio.gather(*[worker() for _ in range(concurrency)])
+            await asyncio.gather(*[one_client() for _ in range(clients)])
 
+        wall = max(time.perf_counter() - t0, 1e-6)
         ordered = sorted(latencies)
         mean = statistics.fmean(ordered) if ordered else 0.0
         p95 = ordered[min(len(ordered) - 1, int(len(ordered) * 0.95))] if ordered else 0.0
         return {
-            "requests": count,
-            "throughput": round(count / duration, 1) if duration > 0 else 0.0,
+            "requests": len(latencies),
+            "errors": errors,
+            "wall_s": round(wall, 2),
+            "throughput": round(len(latencies) / wall, 1),
             "latency_mean_ms": round(mean, 2),
             "latency_p95_ms": round(p95, 2),
         }
 
-    async def bench(self, concurrency: int, duration: float) -> dict[str, Any]:
-        concurrency = max(1, min(200, concurrency))
-        duration = max(0.5, min(10.0, duration))
-        async_result = await self._bench_path("/api/submit", concurrency, duration)
-        await asyncio.sleep(0.25)
-        sync_result = await self._bench_path("/api/submit_sync", concurrency, duration)
+    async def _wait_idle(self, timeout_s: float = 45.0) -> None:
+        assert self.read_model is not None
+        deadline = time.perf_counter() + timeout_s
+        while time.perf_counter() < deadline:
+            jobs = self.read_model.all()
+            in_flight = sum(1 for j in jobs if j["status"] not in ("COMPLETED", "FAILED"))
+            if in_flight == 0:
+                return
+            await asyncio.sleep(0.1)
+
+    async def experiment(self, clients: int, messages: int) -> dict[str, Any]:
+        clients = max(1, min(50, clients))
+        messages = max(1, min(50, messages))
+        if clients * messages > EXPERIMENT_MAX:
+            messages = max(1, EXPERIMENT_MAX // clients)
+        self.reset()
+        self.settings.process_fail_rate = 0.0
+
+        async_result = await self._phase("/api/submit", clients, messages)
+        await self._wait_idle()
+        await asyncio.sleep(0.2)
+        sync_result = await self._phase("/api/submit_sync", clients, messages)
+
         thr = sync_result["throughput"]
         lat = async_result["latency_mean_ms"]
         return {
-            "concurrency": concurrency,
-            "duration": duration,
+            "clients": clients,
+            "messages": messages,
+            "total": clients * messages,
             "async": async_result,
             "sync": sync_result,
             "speedup_throughput": round(async_result["throughput"] / thr, 2) if thr else None,
@@ -369,9 +415,9 @@ class ConfigBody(BaseModel):
     finalize_duration: float | None = None
 
 
-class BenchBody(BaseModel):
-    concurrency: int = 20
-    duration: float = 1.5
+class ExperimentBody(BaseModel):
+    clients: int = 10
+    messages: int = 5
 
 
 class CrashBody(BaseModel):
@@ -435,9 +481,9 @@ async def api_reset() -> JSONResponse:
     return JSONResponse({"ok": True})
 
 
-@app.post("/api/bench")
-async def api_bench(body: BenchBody) -> JSONResponse:
-    return JSONResponse(await stand.bench(body.concurrency, body.duration))
+@app.post("/api/experiment")
+async def api_experiment(body: ExperimentBody) -> JSONResponse:
+    return JSONResponse(await stand.experiment(body.clients, body.messages))
 
 
 @app.post("/api/crash")
