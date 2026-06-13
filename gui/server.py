@@ -27,11 +27,11 @@ import worker_validate.worker as wv
 from common.broker.base import RetryPolicy
 from common.broker.in_memory import InMemoryBroker
 from common.config import Settings
-from common.idempotency import InMemoryIdempotencyStore
+from common.idempotency import InMemoryIdempotencyStore, idempotent
 from common.messages import COMMANDS, Envelope, MessageType, new_id
 from common.observability import configure_logging, correlation
 from common.outbox import InMemoryOutbox, OutboxPublisher
-from common.work import simulate_work
+from common.work import StepError, simulate_work
 
 GUI_DIR = Path(__file__).resolve().parent
 PORT = 8080
@@ -67,6 +67,7 @@ class Stand:
         self.events: list[dict[str, Any]] = []
         self.seq = 0
         self.started_at = time.time()
+        self.crash_remaining = 0
         self.counters = self._fresh_counters()
 
     @staticmethod
@@ -77,11 +78,25 @@ class Stand:
         self.coordinator = await coordinator_mod.setup(self.broker)
         self.read_model = await query_mod.setup(self.broker)
         await wv.setup(self.broker, self.settings, self.idem)
-        await wp.setup(self.broker, self.settings, self.idem)
+        await self._setup_process_with_crash()
         await wf.setup(self.broker, self.settings, self.idem)
         self._install_hooks()
         await self.broker.start()
         await self.publisher.start()
+
+    async def _setup_process_with_crash(self) -> None:
+        async def handler(env: Envelope) -> None:
+            if self.crash_remaining > 0:
+                self.crash_remaining -= 1
+                raise StepError("имитация падения worker-process во время обработки")
+            await wp.handle_process(self.broker, self.settings, env)
+
+        await self.broker.subscribe(
+            MessageType.PROCESS_STEP, idempotent(self.idem, handler), group="process"
+        )
+
+    def set_crash(self, count: int) -> None:
+        self.crash_remaining = max(0, min(3, count))
 
     async def stop(self) -> None:
         await self.publisher.stop()
@@ -345,6 +360,10 @@ class BenchBody(BaseModel):
     duration: float = 1.5
 
 
+class CrashBody(BaseModel):
+    count: int = 2
+
+
 stand = Stand()
 
 
@@ -404,6 +423,12 @@ async def api_reset() -> JSONResponse:
 @app.post("/api/bench")
 async def api_bench(body: BenchBody) -> JSONResponse:
     return JSONResponse(await stand.bench(body.concurrency, body.duration))
+
+
+@app.post("/api/crash")
+async def api_crash(body: CrashBody) -> JSONResponse:
+    stand.set_crash(body.count)
+    return JSONResponse({"crash_remaining": stand.crash_remaining})
 
 
 @app.post("/api/level1")

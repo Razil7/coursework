@@ -187,6 +187,7 @@
         <div style="display:flex;gap:8px;flex-wrap:wrap">
           <button class="primary" onclick="submitJob('async')">▶ Заявка (async, 202)</button>
           <button class="alt" onclick="submitJob('sync')">⏱ Синхронно (baseline)</button>
+          <button class="ghost" style="border-color:var(--err);color:#ff9b94" onclick="crashDemo()">💥 Уронить worker + заявка</button>
         </div>
         <div style="margin-top:8px"><input type="text" id="payload" placeholder='payload (необязательно), напр. {"order": 42}' /></div>
         <div id="sync-out" class="note hide"></div>
@@ -205,6 +206,7 @@
           <span><input type="range" id="r-val" min="0" max="500" step="10" value="50" oninput="onCfg()"><b id="v-val" class="pill">50ms</b></span>
         </div>
         <div class="note">Подними «сбой process» до 100% и отправь async-заявку → шаг будет повторяться (повторы), затем сага запустит <b>компенсацию</b> и заявка станет FAILED. При 20–60% часть заявок проходит после повторов.</div>
+        <div class="note">💥 <b>Уронить worker</b>: worker-process «падает» (бросает исключение) 2 раза во время обработки. Сообщение <b>не подтверждается</b> и <b>передоставляется</b> (видно как повторы) — заявка всё равно восстанавливается до <b>COMPLETED</b>, а идемпотентность не даёт продублировать шаг. Это демонстрация <b>принципа</b>; полное восстановление при падении процесса — свойство durable-формы (RabbitMQ, режим B). См. рис. 2.9 в ПЗ.</div>
       </div>
 
       <div class="grid" style="grid-template-columns:1fr 1fr;gap:16px">
@@ -411,6 +413,11 @@ async function submitJob(mode){
     const r = await post("/api/submit_sync", {data});
     $("#sync-out").innerHTML = `✅ sync завершён за <b>${r.elapsed_s} c</b> (validate+process+finalize последовательно). job ${shortId(r.job_id)}`;
   }
+}
+
+async function crashDemo(){
+  await post("/api/crash", {count:2});
+  await post("/api/submit", {data:{crash_demo:true}});
 }
 
 let cfgTimer=null;
