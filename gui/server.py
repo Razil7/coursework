@@ -37,7 +37,7 @@ GUI_DIR = Path(__file__).resolve().parent
 PORT = 8080
 BASE_URL = f"http://127.0.0.1:{PORT}"
 EVENT_CAP = 800
-BENCH_MAX_REQUESTS = 3000
+BENCH_MAX_REQUESTS = 600
 
 STEP_ORDER = ["validate", "process", "finalize"]
 
@@ -233,6 +233,18 @@ class Stand:
 
     def reset(self) -> None:
         assert self.read_model is not None and self.coordinator is not None
+        for by_group in self.broker._groups.values():
+            for grp in by_group.values():
+                while not grp.queue.empty():
+                    try:
+                        grp.queue.get_nowait()
+                        grp.queue.task_done()
+                    except Exception:
+                        break
+        for task in list(self.broker._bg):
+            task.cancel()
+        self.broker._bg.clear()
+        self.outbox._rows.clear()
         self.read_model._jobs.clear()
         self.coordinator._sagas.clear()
         self.broker.dead_letters.clear()
