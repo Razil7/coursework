@@ -1,66 +1,13 @@
-# Python
-__pycache__/
-*.py[cod]
-*$py.class
-*.egg-info/
-.eggs/
-build/
-dist/
-.venv/
-venv/
-env/
-
-# Tooling caches
-.pytest_cache/
-.mypy_cache/
-.ruff_cache/
-.coverage
-htmlcov/
-
-# IDE
-.idea/
-.vscode/
-*.swp
-
-# OS
-Thumbs.db
-.DS_Store
-
-# Project artifacts
-diagrams/png/
-
-# Вспомогательный код и материалы, не относящиеся к самому стенду (в git не публикуем):
-# исходники и рендер диаграмм, сборка пояснительной записки (.docx), Docker-окружение (режим B).
-diagrams/
-tools/
-deploy/
-
-# Вся документация / текст ПЗ / личные конспекты — не публикуем в кодовом репозитории
-docs/
-
-experiments/results/*.csv
-experiments/results/*.json
-!experiments/results/.gitkeep
-
-# Local environment
-.env
-*.local
-
-
-# Личный конспект (Obsidian), секрет MCP и справочные методички вуза — не часть кодовой базы
-Obsidian-vault/
-.mcp.json
-Методич указания/
-
-# Служебное от ассистентов разработки / редакторов — не часть курсовой работы
-.claude/
-CLAUDE.md
-.cursor/
-.aider*
-.windsurfrules
-
-# Временные/служебные файлы Word и редакторов
-~$*
-*.tmp
-*.bak
-*.log
+*
+!*/
+!/.gitignore
+!/README.md
+!/pyproject.toml
+!/src/**/*.py
+!/tests/**/*.py
+!/examples/**/*.py
+!/gui/**/*.py
+!/gui/**/*.html
+!/experiments/**/*.py
+!/experiments/README.md
+!/experiments/results/.gitkeep
