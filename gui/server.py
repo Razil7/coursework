@@ -344,35 +344,87 @@ class Stand:
             "latency_p95_ms": round(p95, 2),
         }
 
-    async def _wait_idle(self, timeout_s: float = 45.0) -> None:
+    async def _wait_drained(self, expected: int, timeout_s: float) -> bool:
+        """Ждём, пока все ``expected`` заявок дойдут до терминального статуса.
+
+        Возвращает ``True``, если конвейер полностью дренировался в срок, и ``False``,
+        если истёк таймаут (заявки ещё обрабатываются). Считаем именно завершённые
+        заявки, а не «ноль в обработке»: в момент возврата фазы приёма outbox может
+        ещё не успеть опубликовать часть JOB_SUBMITTED.
+        """
         assert self.read_model is not None
         deadline = time.perf_counter() + timeout_s
         while time.perf_counter() < deadline:
             jobs = self.read_model.all()
-            in_flight = sum(1 for j in jobs if j["status"] not in ("COMPLETED", "FAILED"))
-            if in_flight == 0:
-                return
-            await asyncio.sleep(0.1)
+            done = sum(1 for j in jobs if j["status"] in ("COMPLETED", "FAILED"))
+            if done >= expected:
+                return True
+            await asyncio.sleep(0.05)
+        return False
+
+    def _terminal_counts(self) -> tuple[int, int]:
+        assert self.read_model is not None
+        jobs = self.read_model.all()
+        completed = sum(1 for j in jobs if j["status"] == "COMPLETED")
+        failed = sum(1 for j in jobs if j["status"] == "FAILED")
+        return completed, failed
 
     async def experiment(self, clients: int, messages: int) -> dict[str, Any]:
         clients = max(1, min(50, clients))
         messages = max(1, min(50, messages))
         if clients * messages > EXPERIMENT_MAX:
             messages = max(1, EXPERIMENT_MAX // clients)
+        total = clients * messages
         self.reset()
         self.settings.process_fail_rate = 0.0
 
-        async_result = await self._phase("/api/submit", clients, messages)
-        await self._wait_idle()
+        # запас по времени на фоновый дренаж: один воркер «process» обрабатывает
+        # заявки последовательно (~process_duration каждую), плюс буфер.
+        per_job = (
+            self.settings.validate_duration
+            + self.settings.process_duration
+            + self.settings.finalize_duration
+        )
+        drain_budget = min(240.0, total * per_job * 1.4 + 15.0)
+
+        # === ФАЗА 1. Асинхронный приём ===
+        # Замеряем приём (клиент получает 202 сразу), затем ОТДЕЛЬНО ждём полного
+        # завершения фоновой обработки и замеряем её длительность — ничего не прячем.
+        async_accept = await self._phase("/api/submit", clients, messages)
+        drain_t0 = time.perf_counter()
+        drained = await self._wait_drained(total, drain_budget)
+        drain_s = time.perf_counter() - drain_t0
+        completed, failed = self._terminal_counts()
+        async_result = {
+            **async_accept,
+            "drain_s": round(drain_s, 2),
+            "total_s": round(async_accept["wall_s"] + drain_s, 2),
+            "completed": completed,
+            "failed": failed,
+            "drained": drained,
+        }
+
         await asyncio.sleep(0.2)
-        sync_result = await self._phase("/api/submit_sync", clients, messages)
+
+        # === ФАЗА 2. Синхронный приём ===
+        # Синхронный запрос блокирует клиента до конца всех шагов: приём == полная
+        # обработка, отдельного дренажа нет. Идёт в обход брокера (в счётчики не попадает).
+        sync_accept = await self._phase("/api/submit_sync", clients, messages)
+        sync_result = {
+            **sync_accept,
+            "drain_s": 0.0,
+            "total_s": sync_accept["wall_s"],
+            "completed": total - sync_accept["errors"],
+            "failed": 0,
+            "drained": True,
+        }
 
         thr = sync_result["throughput"]
         lat = async_result["latency_mean_ms"]
         return {
             "clients": clients,
             "messages": messages,
-            "total": clients * messages,
+            "total": total,
             "async": async_result,
             "sync": sync_result,
             "speedup_throughput": round(async_result["throughput"] / thr, 2) if thr else None,
