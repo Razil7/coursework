@@ -8,5 +8,4 @@
 !/gui/**/*.py
 !/gui/**/*.html
 !/experiments/**/*.py
-!/experiments/README.md
 !/experiments/results/.gitkeep
