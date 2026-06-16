@@ -1,7 +1,6 @@
 *
 !*/
 !/.gitignore
-!/README.md
 !/pyproject.toml
 !/src/**/*.py
 !/tests/**/*.py

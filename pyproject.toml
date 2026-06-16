@@ -6,7 +6,6 @@ build-backend = "hatchling.build"
 name = "async-microservices-uir"
 version = "0.1.0"
 description = "Демонстрационный стенд асинхронных процессов в микросервисных системах (курсовая работа)"
-readme = "README.md"
 requires-python = ">=3.11"
 license = { text = "MIT" }
 authors = [{ name = "Student" }]
@@ -16,21 +15,17 @@ dependencies = [
     "uvicorn[standard]>=0.29",
     "pydantic>=2.6",
     "pydantic-settings>=2.2",
-    "httpx>=0.27",            # HTTP-клиент для синхронного baseline
-    "structlog>=24.1",        # структурированное логирование
-    "prometheus-client>=0.20", # метрики
+    "httpx>=0.27",
+    "structlog>=24.1",
+    "prometheus-client>=0.20",
 ]
 
 [project.optional-dependencies]
-# Опциональный уровень 3 — распределённый режим на RabbitMQ. По решению о scope
-# («без Docker») клиент RabbitMQ вынесен в extra: для запуска и тестирования ядра
-# (режим A) он не требуется. Устанавливается явно: pip install -e ".[rabbitmq]".
 rabbitmq = [
-    "aio-pika>=9.4",          # асинхронный клиент RabbitMQ (AMQP 0-9-1)
+    "aio-pika>=9.4",
 ]
-# Будущие SQL-реализации Outbox/Inbox (направление дальнейшего развития).
 sql = [
-    "asyncpg>=0.29",          # асинхронный драйвер PostgreSQL
+    "asyncpg>=0.29",
     "sqlalchemy[asyncio]>=2.0",
 ]
 dev = [
@@ -40,7 +35,7 @@ dev = [
     "mypy>=1.9",
 ]
 load = [
-    "locust>=2.25",           # нагрузочное тестирование (эксперимент sync vs async)
+    "locust>=2.25",
 ]
 
 [tool.hatch.build.targets.wheel]
@@ -61,9 +56,6 @@ src = ["src", "tests"]
 
 [tool.ruff.lint]
 select = ["E", "F", "I", "UP", "B", "ASYNC", "RUF"]
-# Проект ведётся на русском языке: кириллица в строках, докстрингах и комментариях —
-# намеренная. Отключаем правила «неоднозначных Unicode-символов», иначе линтер
-# захлёбывается ложными срабатываниями на кириллических буквах.
 ignore = ["RUF001", "RUF002", "RUF003"]
 
 [tool.mypy]
