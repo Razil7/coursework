@@ -38,7 +38,6 @@ GUI_DIR = Path(__file__).resolve().parent
 PORT = 8080
 BASE_URL = f"http://127.0.0.1:{PORT}"
 EVENT_CAP = 800
-EXPERIMENT_MAX = 800
 
 STEP_ORDER = ["validate", "process", "finalize"]
 
@@ -71,6 +70,8 @@ class Stand:
         self.crash_remaining = {
             "coordinator": 0, "validate": 0, "process": 0, "finalize": 0, "query": 0,
         }
+        self.gateway_down = False
+        self._gateway_recover: asyncio.Task[None] | None = None
         self.counters = self._fresh_counters()
 
     @staticmethod
@@ -131,9 +132,37 @@ class Stand:
 
         return handler
 
-    def set_crash(self, service: str, count: int) -> None:
+    def set_crash(self, service: str, count: int = 1) -> None:
         if service in self.crash_remaining:
             self.crash_remaining[service] = max(0, min(3, count))
+
+    async def crash_and_submit(self, service: str) -> dict[str, Any]:
+        """Уронить сервис один раз и отправить заявку, которая это вскроет.
+
+        Пять сервисов-потребителей (coordinator/validate/process/finalize/query)
+        падают на первом сообщении → брокер передоставляет (виден повтор) → успех.
+        Gateway не потребляет из брокера — его падение демонстрируется через гарантию
+        Outbox: публикатор «падает», заявка ждёт в Outbox, затем доставляется.
+        """
+        if service == "gateway":
+            return await self._crash_gateway()
+        self.set_crash(service, 1)
+        job_id = await self.submit_async({})
+        return {"service": service, "job_id": job_id, "mechanism": "retry"}
+
+    async def _crash_gateway(self) -> dict[str, Any]:
+        if not self.gateway_down:
+            self.gateway_down = True
+            await self.publisher.stop()
+            self._gateway_recover = asyncio.create_task(self._recover_gateway())
+        job_id = await self.submit_async({})
+        return {"service": "gateway", "job_id": job_id, "mechanism": "outbox"}
+
+    async def _recover_gateway(self) -> None:
+        await asyncio.sleep(1.8)
+        self.gateway_down = False
+        if not self.publisher._running:
+            await self.publisher.start()
 
     async def stop(self) -> None:
         await self.publisher.stop()
@@ -263,7 +292,9 @@ class Stand:
                 "jobs_completed": completed,
                 "jobs_failed": failed,
                 "jobs_in_flight": len(jobs) - completed - failed,
+                "outbox_pending": sum(1 for r in self.outbox._rows if not r.sent),
             },
+            "gateway_down": self.gateway_down,
             "dead_letters": [
                 {"type": e.type.value, "correlation_id": e.correlation_id, "attempt": e.attempt}
                 for e in self.broker.dead_letters[-30:]
@@ -307,128 +338,85 @@ class Stand:
         self.counters = self._fresh_counters()
         for service in self.crash_remaining:
             self.crash_remaining[service] = 0
+        self.gateway_down = False
 
-    async def _phase(self, path: str, clients: int, messages: int) -> dict[str, Any]:
+    async def _bench(self, path: str, duration_s: float, concurrency: int) -> dict[str, Any]:
+        """Closed-loop замер приёма (как experiments/bench.py).
+
+        ``concurrency`` клиентов в течение ``duration_s`` секунд НЕПРЕРЫВНО шлют запросы
+        (каждый — следующий сразу после ответа на предыдущий). Меряем пропускную
+        способность приёма и задержку ответа клиенту. Полную обработку конвейера НЕ ждём:
+        асинхронный приём её и не ждёт — она идёт в фоне (видно во вкладке «Заявки»).
+        """
         import httpx
 
         latencies: list[float] = []
         errors = 0
-        t0 = time.perf_counter()
+        started = time.perf_counter()
+        stop_at = started + duration_s
 
         async with httpx.AsyncClient(base_url=BASE_URL, timeout=60.0) as client:
 
             async def one_client() -> None:
                 nonlocal errors
-                for _ in range(messages):
-                    started = time.perf_counter()
+                while time.perf_counter() < stop_at:
+                    t0 = time.perf_counter()
                     try:
                         resp = await client.post(path, json={"data": {}})
                         if resp.status_code >= 400:
                             errors += 1
                     except Exception:
                         errors += 1
-                    latencies.append((time.perf_counter() - started) * 1000.0)
+                    latencies.append((time.perf_counter() - t0) * 1000.0)
 
-            await asyncio.gather(*[one_client() for _ in range(clients)])
+            await asyncio.gather(*[one_client() for _ in range(concurrency)])
 
-        wall = max(time.perf_counter() - t0, 1e-6)
+        elapsed = max(time.perf_counter() - started, 1e-6)
         ordered = sorted(latencies)
-        mean = statistics.fmean(ordered) if ordered else 0.0
-        p95 = ordered[min(len(ordered) - 1, int(len(ordered) * 0.95))] if ordered else 0.0
+
+        def pct(p: float) -> float:
+            if not ordered:
+                return 0.0
+            return ordered[min(len(ordered) - 1, int(len(ordered) * p))]
+
         return {
             "requests": len(latencies),
             "errors": errors,
-            "wall_s": round(wall, 2),
-            "throughput": round(len(latencies) / wall, 1),
-            "latency_mean_ms": round(mean, 2),
-            "latency_p95_ms": round(p95, 2),
+            "elapsed_s": round(elapsed, 2),
+            "throughput": round(len(latencies) / elapsed, 1),
+            "latency_mean_ms": round(statistics.fmean(ordered), 1) if ordered else 0.0,
+            "latency_p50_ms": round(pct(0.50), 1),
+            "latency_p95_ms": round(pct(0.95), 1),
+            "latency_p99_ms": round(pct(0.99), 1),
         }
 
-    async def _wait_drained(self, expected: int, timeout_s: float) -> bool:
-        """Ждём, пока все ``expected`` заявок дойдут до терминального статуса.
-
-        Возвращает ``True``, если конвейер полностью дренировался в срок, и ``False``,
-        если истёк таймаут (заявки ещё обрабатываются). Считаем именно завершённые
-        заявки, а не «ноль в обработке»: в момент возврата фазы приёма outbox может
-        ещё не успеть опубликовать часть JOB_SUBMITTED.
-        """
-        assert self.read_model is not None
-        deadline = time.perf_counter() + timeout_s
-        while time.perf_counter() < deadline:
-            jobs = self.read_model.all()
-            done = sum(1 for j in jobs if j["status"] in ("COMPLETED", "FAILED"))
-            if done >= expected:
-                return True
-            await asyncio.sleep(0.05)
-        return False
-
-    def _terminal_counts(self) -> tuple[int, int]:
-        assert self.read_model is not None
-        jobs = self.read_model.all()
-        completed = sum(1 for j in jobs if j["status"] == "COMPLETED")
-        failed = sum(1 for j in jobs if j["status"] == "FAILED")
-        return completed, failed
-
-    async def experiment(self, clients: int, messages: int) -> dict[str, Any]:
-        clients = max(1, min(50, clients))
-        messages = max(1, min(50, messages))
-        if clients * messages > EXPERIMENT_MAX:
-            messages = max(1, EXPERIMENT_MAX // clients)
-        total = clients * messages
+    async def experiment(self, duration_s: float, concurrency: int) -> dict[str, Any]:
+        duration_s = max(1.0, min(15.0, duration_s))
+        concurrency = max(1, min(80, concurrency))
         self.reset()
         self.settings.process_fail_rate = 0.0
 
-        # запас по времени на фоновый дренаж: один воркер «process» обрабатывает
-        # заявки последовательно (~process_duration каждую), плюс буфер.
-        per_job = (
-            self.settings.validate_duration
-            + self.settings.process_duration
-            + self.settings.finalize_duration
-        )
-        drain_budget = min(240.0, total * per_job * 1.4 + 15.0)
+        # Фаза 1 — асинхронный приём: клиент получает ответ сразу после фиксации в
+        # Outbox, обработка идёт в фоне. Затем reset() — сбрасываем накопленный
+        # фоновый бэклог, чтобы он не конкурировал за event loop с фазой 2 и чтобы
+        # счётчики не «росли сами» после эксперимента.
+        async_res = await self._bench("/api/submit", duration_s, concurrency)
+        self.reset()
+        await asyncio.sleep(0.1)
 
-        # === ФАЗА 1. Асинхронный приём ===
-        # Замеряем приём (клиент получает 202 сразу), затем ОТДЕЛЬНО ждём полного
-        # завершения фоновой обработки и замеряем её длительность — ничего не прячем.
-        async_accept = await self._phase("/api/submit", clients, messages)
-        drain_t0 = time.perf_counter()
-        drained = await self._wait_drained(total, drain_budget)
-        drain_s = time.perf_counter() - drain_t0
-        completed, failed = self._terminal_counts()
-        async_result = {
-            **async_accept,
-            "drain_s": round(drain_s, 2),
-            "total_s": round(async_accept["wall_s"] + drain_s, 2),
-            "completed": completed,
-            "failed": failed,
-            "drained": drained,
-        }
+        # Фаза 2 — синхронный приём: запрос блокирует клиента до конца всех шагов.
+        sync_res = await self._bench("/api/submit_sync", duration_s, concurrency)
+        self.reset()
 
-        await asyncio.sleep(0.2)
-
-        # === ФАЗА 2. Синхронный приём ===
-        # Синхронный запрос блокирует клиента до конца всех шагов: приём == полная
-        # обработка, отдельного дренажа нет. Идёт в обход брокера (в счётчики не попадает).
-        sync_accept = await self._phase("/api/submit_sync", clients, messages)
-        sync_result = {
-            **sync_accept,
-            "drain_s": 0.0,
-            "total_s": sync_accept["wall_s"],
-            "completed": total - sync_accept["errors"],
-            "failed": 0,
-            "drained": True,
-        }
-
-        thr = sync_result["throughput"]
-        lat = async_result["latency_mean_ms"]
+        thr = sync_res["throughput"]
+        lat = async_res["latency_mean_ms"]
         return {
-            "clients": clients,
-            "messages": messages,
-            "total": total,
-            "async": async_result,
-            "sync": sync_result,
-            "speedup_throughput": round(async_result["throughput"] / thr, 2) if thr else None,
-            "speedup_latency": round(sync_result["latency_mean_ms"] / lat, 2) if lat else None,
+            "duration_s": duration_s,
+            "concurrency": concurrency,
+            "async": async_res,
+            "sync": sync_res,
+            "speedup_throughput": round(async_res["throughput"] / thr, 2) if thr else None,
+            "speedup_latency": round(sync_res["latency_mean_ms"] / lat, 2) if lat else None,
         }
 
     async def level1_demo(self) -> dict[str, Any]:
@@ -468,13 +456,12 @@ class ConfigBody(BaseModel):
 
 
 class ExperimentBody(BaseModel):
-    clients: int = 10
-    messages: int = 5
+    duration_s: float = 6.0
+    concurrency: int = 50
 
 
 class CrashBody(BaseModel):
     service: str = "process"
-    count: int = 2
 
 
 stand = Stand()
@@ -535,13 +522,12 @@ async def api_reset() -> JSONResponse:
 
 @app.post("/api/experiment")
 async def api_experiment(body: ExperimentBody) -> JSONResponse:
-    return JSONResponse(await stand.experiment(body.clients, body.messages))
+    return JSONResponse(await stand.experiment(body.duration_s, body.concurrency))
 
 
 @app.post("/api/crash")
 async def api_crash(body: CrashBody) -> JSONResponse:
-    stand.set_crash(body.service, body.count)
-    return JSONResponse({"crash_armed": stand.crash_remaining})
+    return JSONResponse(await stand.crash_and_submit(body.service))
 
 
 @app.post("/api/level1")

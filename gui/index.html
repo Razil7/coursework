@@ -24,6 +24,8 @@
   header{display:flex;align-items:center;gap:18px;flex-wrap:wrap;background:linear-gradient(135deg,#171d27,#1a2433);border:1px solid var(--line);border-radius:var(--r);padding:16px 20px;margin-bottom:14px}
   header .brand h1{font-size:18px;margin:0;font-weight:700;letter-spacing:.2px}
   .live{display:inline-flex;align-items:center;gap:7px;font-size:12px;color:var(--muted);background:#142016;border:1px solid #1f3a24;border-radius:999px;padding:4px 11px}
+  .live.off{color:#ffb0aa;background:#221314;border-color:#5a2b2b}
+  .live.off .dot{background:var(--err);animation:none;box-shadow:none}
   .dot{width:8px;height:8px;border-radius:50%;background:var(--ok);box-shadow:0 0 0 0 rgba(67,196,99,.55);animation:pulse 2.2s infinite}
   @keyframes pulse{0%{box-shadow:0 0 0 0 rgba(67,196,99,.5)}70%{box-shadow:0 0 0 7px rgba(67,196,99,0)}100%{box-shadow:0 0 0 0 rgba(67,196,99,0)}}
   .spacer{flex:1}
@@ -154,7 +156,7 @@
       <div class="chip"><b id="h-retry" style="color:var(--warn)">0</b><span>повторов</span></div>
     </div>
     <div style="display:flex;flex-direction:column;gap:8px;align-items:flex-end">
-      <span class="live"><span class="dot"></span>стенд работает</span>
+      <span class="live" id="live"><span class="dot"></span>стенд работает</span>
       <button class="ghost sm" onclick="resetAll()">↺ Сбросить</button>
     </div>
   </header>
@@ -172,12 +174,12 @@
     <div class="grid side">
       <div class="panel">
         <h2>Отправить заявку</h2>
-        <div style="display:flex;gap:9px;flex-wrap:wrap;margin-top:6px">
-          <button class="primary" onclick="submitAsync()">Асинхронно</button>
-          <button class="alt" onclick="submitSync()">Синхронно</button>
+        <p class="lead">Заявка асинхронно пройдёт три шага через брокер: validate → process → finalize. Следи за ходом в ленте справа и в списке ниже; клик по заявке — полная трасса. Поля необязательны — это содержимое заявки, оно лишь видно в трассировке.</p>
+        <div class="grid c2" style="margin-top:4px">
+          <label class="sub" style="display:block">Заявка<input type="text" id="f-name" style="margin-top:5px" placeholder="например: отчёт" /></label>
+          <label class="sub" style="display:block">Значение<input type="text" id="f-val" style="margin-top:5px" placeholder="например: 42" /></label>
         </div>
-        <div style="margin-top:12px"><button class="ghost sm" onclick="togglePayload()">+ данные заявки (необязательно)</button></div>
-        <div id="payload-box" class="hide" style="margin-top:8px"><input type="text" id="payload" placeholder='например: {"заказ": 42}' /></div>
+        <div style="margin-top:14px"><button class="primary" onclick="submitAsync()">Отправить заявку</button></div>
         <div id="jobs-out" class="hint hide"></div>
       </div>
       <div class="panel">
@@ -210,15 +212,9 @@
       </div>
       <div class="panel">
         <h2>② Падение сервиса → восстановление</h2>
-        <div class="row" style="margin:8px 0 10px">
-          <span>Сколько раз уронить</span>
-          <span class="seg" id="crash-count">
-            <button class="sm" onclick="setCrashN(1)">1×</button>
-            <button class="sm on" onclick="setCrashN(2)">2×</button>
-            <button class="sm" onclick="setCrashN(3)">3×</button>
-          </span>
-        </div>
+        <p class="lead">Нажми на сервис — он один раз «упадёт» на следующей заявке. Пять потребителей восстанавливаются повтором: брокер передоставляет сообщение (виден «повтор» в ленте) → заявка доходит до COMPLETED. Gateway не потребляет из брокера — его падение демонстрирует гарантию Outbox.</p>
         <div class="svcgrid">
+          <button class="danger svc" onclick="crashService('gateway')"><b>gateway</b><small>приём → Outbox</small></button>
           <button class="danger svc" onclick="crashService('coordinator')"><b>coordinator</b><small>дирижёр (сага)</small></button>
           <button class="danger svc" onclick="crashService('validate')"><b>worker-validate</b><small>шаг 1</small></button>
           <button class="danger svc" onclick="crashService('process')"><b>worker-process</b><small>шаг 2</small></button>
@@ -238,9 +234,10 @@
   <section id="t-exp" class="hide">
     <div class="panel">
       <h2>Эксперимент: асинхронный приём против синхронного</h2>
+      <p class="lead">Заданное число клиентов в течение замера непрерывно шлёт запросы. Меряем, как быстро сервер принимает заявку и сколько ждёт клиент. Асинхронный приём отвечает сразу после записи в Outbox (обработка идёт в фоне), синхронный держит соединение до конца всех шагов.</p>
       <div style="display:flex;gap:20px;align-items:center;flex-wrap:wrap;margin:16px 0">
-        <label class="sub">Клиентов <input type="range" id="e-cli" min="1" max="40" step="1" value="10" oninput="lbl('e-cli','v-cli')"><b id="v-cli" class="pill">10</b></label>
-        <label class="sub">Сообщений на клиента <input type="range" id="e-msg" min="1" max="20" step="1" value="5" oninput="lbl('e-msg','v-msg')"><b id="v-msg" class="pill">5</b></label>
+        <label class="sub">Клиентов <input type="range" id="e-cli" min="1" max="80" step="1" value="50" oninput="lbl('e-cli','v-cli')"><b id="v-cli" class="pill">50</b></label>
+        <label class="sub">Длительность замера, с <input type="range" id="e-dur" min="1" max="10" step="1" value="6" oninput="lbl('e-dur','v-dur')"><b id="v-dur" class="pill">6</b></label>
         <button class="primary" id="e-run" onclick="runExperiment()">Запустить эксперимент</button>
         <span id="e-status" class="sub"></span>
       </div>
@@ -267,7 +264,8 @@
   <!-- LEVEL 1 -->
   <section id="t-lvl1" class="hide">
     <div class="panel">
-      <h2>Asyncio</h2>
+      <h2>Asyncio: конкурентность внутри одного процесса</h2>
+      <p class="lead">Демо берёт <b>5 задач по 0,2 с</b> (имитация ожидания ввода-вывода). По очереди они занимают 5 × 0,2 = <b>1,0 с</b>. Запущенные вместе (<span class="mono">asyncio.gather</span>) — около <b>0,2 с</b>: один поток не простаивает в ожидании, а переключается между задачами. Это конкурентность без параллелизма — тот самый механизм, на котором держится асинхронный приём и вся пропускная способность стенда.</p>
       <button class="primary" onclick="runLevel1()">Запустить демо</button>
       <div class="grid c3" style="margin-top:16px">
         <div class="card"><h3>Последовательно</h3><div class="bignum" id="l-seq">—</div><span class="sub">по очереди</span></div>
@@ -289,9 +287,8 @@
       </div>
       <div class="panel">
         <h2>Очередь недоставленных (DLQ) <span class="sub" id="dlq-count"></span></h2>
-        <div id="dlq" class="feed" style="max-height:130px"></div>
-        <h2 style="margin-top:16px">Полный журнал сообщений</h2>
-        <div class="feed feed-list" id="feed3" style="max-height:280px"></div>
+        <p class="lead">Сюда попадают сообщения, исчерпавшие все повторы (по умолчанию 5 попыток). В обычном прогоне пусто.</p>
+        <div id="dlq" class="feed" style="max-height:240px"></div>
       </div>
     </div>
     <div class="panel" style="margin-top:16px">
@@ -309,7 +306,7 @@ const $ = s => document.querySelector(s);
 const $$ = s => [...document.querySelectorAll(s)];
 const api = async (u,o) => (await fetch(u,o)).json();
 const post = (u,b) => api(u,{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify(b||{})});
-let lastSeq=0, crashN=2, seenJobs=new Set();
+let lastSeq=0, seenJobs=new Set();
 
 function go(tab){ $$("#tabs button").forEach(b=>b.classList.toggle("active",b.dataset.tab===tab));
   ["jobs","fail","exp","lvl1","obs"].forEach(t=>$("#t-"+t).classList.toggle("hide",t!==tab)); }
@@ -377,6 +374,7 @@ function renderObs(s){
     <tr><th>Повторов (передоставок)</th><td style="color:var(--warn)">${c.retries}</td></tr>
     <tr><th>В DLQ (недоставленные)</th><td style="color:var(--err)">${c.dead_letters}</td></tr>
     <tr><th>Заявок всего</th><td>${c.jobs_total}</td></tr>
+    <tr><th>Ждут в Outbox</th><td>${c.outbox_pending}</td></tr>
     <tr><th>В обработке</th><td style="color:var(--accent)">${c.jobs_in_flight}</td></tr>
     <tr><th>Завершено</th><td style="color:var(--ok)">${c.jobs_completed}</td></tr>
     <tr><th>Провалено (через компенсацию)</th><td style="color:var(--err)">${c.jobs_failed}</td></tr>`;
@@ -392,17 +390,19 @@ function applyState(s){
   $("#h-retry").textContent=s.counters.retries;
   renderJobs(s.jobs); renderObs(s);
 }
+function setOnline(ok){ const el=$("#live"); el.classList.toggle("off",!ok);
+  el.lastChild.textContent = ok ? "стенд работает" : "стенд недоступен — обновите (F5)"; }
 async function poll(){
-  try{ const s=await api("/api/state"); applyState(s);
+  try{ const s=await api("/api/state"); applyState(s); setOnline(true);
+    if(s.last_seq<lastSeq){ lastSeq=0; feed=[]; seenJobs.clear(); $$(".feed-list").forEach(e=>e.innerHTML=""); } // стенд сбросили вне клиента
     if(s.last_seq>lastSeq){ const r=await api("/api/events?since="+lastSeq); if(r.events.length)pushEvents(r.events); lastSeq=r.last_seq; }
-  }catch(e){}
+  }catch(e){ setOnline(false); }
   setTimeout(poll,650);
 }
 
-function togglePayload(){ $("#payload-box").classList.toggle("hide"); }
-function readPayload(){ const r=$("#payload").value.trim(); if(!r)return {}; try{return JSON.parse(r);}catch(e){return {note:r};} }
-async function submitAsync(){ const r=await post("/api/submit",{data:readPayload()}); showHint("jobs-out",`Заявка <b>${short(r.job_id)}</b> принята.`,"ok"); }
-async function submitSync(){ const r=await post("/api/submit_sync",{data:readPayload()}); showHint("jobs-out",`Синхронно завершено за <b>${r.elapsed_s} c</b>.`,"ok"); }
+function readPayload(){ const a=$("#f-name").value.trim(), b=$("#f-val").value.trim(); const p={};
+  if(a)p["заявка"]=a; if(b)p["значение"]=(b!=="" && !isNaN(+b))?+b:b; return p; }
+async function submitAsync(){ const r=await post("/api/submit",{data:readPayload()}); showHint("jobs-out",`Заявка <b>${short(r.job_id)}</b> принята — следи за ходом в ленте и списке.`,"ok"); }
 
 function onFail(){ $("#v-fail").textContent=$("#r-fail").value+"%"; clearTimeout(window._ft); window._ft=setTimeout(()=>post("/api/config",{process_fail_rate:(+$("#r-fail").value)/100}),200); }
 async function failSubmit(){ const r=await post("/api/submit",{data:{}}); const p=+$("#r-fail").value;
@@ -410,25 +410,29 @@ async function failSubmit(){ const r=await post("/api/submit",{data:{}}); const 
 async function guaranteedFail(){ await post("/api/config",{process_fail_rate:1.0}); $("#r-fail").value=100; $("#v-fail").textContent="100%";
   const r=await post("/api/submit",{data:{}}); showHint("fail-out",`Заявка <b>${short(r.job_id)}</b> отправлена (сбой 100%).`,"warn"); }
 
-function setCrashN(n){ crashN=n; $$("#crash-count button").forEach((b,i)=>b.classList.toggle("on",i+1===n)); }
-async function crashService(service){ await post("/api/crash",{service,count:crashN}); const r=await post("/api/submit",{data:{}});
-  showHint("crash-out",`Сервис <b>${service}</b> уронен ${crashN}× — заявка <b>${short(r.job_id)}</b> отправлена.`,"err");
-  toast(`💥 ${service} ×${crashN}`,"warn"); }
+async function crashService(service){ const r=await post("/api/crash",{service});
+  if(r.mechanism==="outbox"){
+    showHint("crash-out",`<b>gateway</b> «упал» сразу после записи в Outbox. Заявка <b>${short(r.job_id)}</b> ждёт в Outbox — не потеряна; через ~2 с публикатор восстановится и доставит её до конвейера. Это и есть гарантия паттерна Transactional Outbox.`,"warn");
+    toast("💥 gateway — заявка ждёт в Outbox","warn");
+  } else {
+    showHint("crash-out",`Сервис <b>${service}</b> «упал» 1 раз — заявка <b>${short(r.job_id)}</b> отправлена. В ленте появится «повтор» (передоставка) → заявка восстановится до COMPLETED.`,"err");
+    toast(`💥 ${service} ×1`,"warn");
+  } }
 function lbl(r,v){ $("#"+v).textContent=$("#"+r).value; }
-async function runExperiment(){ $("#e-run").disabled=true; $("#e-status").textContent="⏳ идёт эксперимент…";
-  try{ const r=await post("/api/experiment",{clients:+$("#e-cli").value,messages:+$("#e-msg").value});
+async function runExperiment(){ $("#e-run").disabled=true; $("#e-status").textContent="⏳ идёт замер (≈ две фазы)…";
+  ["bar-thr-a","bar-thr-s","bar-lat-a","bar-lat-s"].forEach(id=>$("#"+id).style.height="0px");
+  try{ const r=await post("/api/experiment",{concurrency:+$("#e-cli").value,duration_s:+$("#e-dur").value});
     const mT=Math.max(r.async.throughput,r.sync.throughput,1), mL=Math.max(r.async.latency_mean_ms,r.sync.latency_mean_ms,1);
     $("#bar-thr-a").style.height=(r.async.throughput/mT*155)+"px"; $("#bar-thr-s").style.height=(r.sync.throughput/mT*155)+"px";
     $("#bar-lat-a").style.height=(r.async.latency_mean_ms/mL*155)+"px"; $("#bar-lat-s").style.height=(r.sync.latency_mean_ms/mL*155)+"px";
     $("#n-thr-a").textContent=r.async.throughput; $("#n-thr-s").textContent=r.sync.throughput;
     $("#n-lat-a").textContent=r.async.latency_mean_ms; $("#n-lat-s").textContent=r.sync.latency_mean_ms;
     const err=r.async.errors+r.sync.errors;
-    const drainNote = r.async.drained ? "" : ` <b style="color:var(--warn)">(дренаж не завершился за лимит времени)</b>`;
     showHint("e-sum",
-      `Отправлено по <b>${r.total}</b> заявок каждым способом (${r.clients} клиентов × ${r.messages}). Ошибок: <b>${err}</b>.<br>`+
-      `<b>Асинхронно:</b> клиент получает ответ за ~<b>${r.async.latency_mean_ms} мс</b>; приём всех заявок — <b>${r.async.wall_s} c</b>, затем фоновая обработка ещё <b>${r.async.drain_s} c</b>${drainNote} → полное время <b>${r.async.total_s} c</b> (${r.async.completed} завершено).<br>`+
-      `<b>Синхронно:</b> клиент заблокирован ~<b>${r.sync.latency_mean_ms} мс</b> на каждую заявку → полное время <b>${r.sync.total_s} c</b>.<br>`+
-      `<b>По приёму</b> асинхронный выигрывает: пропускная способность выше в <b>${r.speedup_throughput}×</b>, задержка ответа клиенту ниже в <b>${r.speedup_latency}×</b>.`,
+      `<b>${r.concurrency}</b> клиентов · замер по <b>${r.duration_s} c</b> на каждый способ. Ошибок: <b>${err}</b>.<br>`+
+      `<b>Асинхронно:</b> принято <b>${r.async.requests}</b> заявок, ответ клиенту ~<b>${r.async.latency_mean_ms} мс</b> (p99 ${r.async.latency_p99_ms} мс) — клиент свободен сразу, обработка идёт в фоне (см. вкладку «Заявки»).<br>`+
+      `<b>Синхронно:</b> принято <b>${r.sync.requests}</b> заявок, ответ клиенту ~<b>${r.sync.latency_mean_ms} мс</b> (p99 ${r.sync.latency_p99_ms} мс) — соединение занято всё время обработки (≈ 0,5 c).<br>`+
+      `<b>Итог:</b> пропускная способность приёма выше в <b>${r.speedup_throughput}×</b>, задержка ответа ниже в <b>${r.speedup_latency}×</b>.`,
       err?"warn":"ok");
     $("#e-status").textContent="✓ готово";
   }catch(e){ $("#e-status").textContent="ошибка"; }
